@@ -211,6 +211,27 @@ const parseGeminiTextResponse = (payload) => {
     .trim()
 }
 
+const requestBackendAPI = async ({ finalModel, userPrompt }) => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  return fetch('/api/generate', {
+    method: 'POST',
+    signal: controller.signal,
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 2600,
+        responseMimeType: 'application/json',
+      },
+    }),
+  }).finally(() => clearTimeout(timeout))
+}
+
 const requestGemini = async ({ finalModel, apiKey, userPrompt }) => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
@@ -266,12 +287,6 @@ const buildGeminiError = async (response, finalModel) => {
 }
 
 export async function generateComponentWithGemini({ prompt, model }) {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY
-
-  if (!apiKey) {
-    throw new Error('Missing VITE_GEMINI_API_KEY. Add it in .env and restart the dev server.')
-  }
-
   const finalModel = sanitizeModelName(model)
 
   const userPrompt = `You are an expert React UI engineer.
@@ -298,7 +313,7 @@ Request:\n${prompt}`
   let response = null
   try {
     for (let attempt = 0; attempt <= MAX_503_RETRIES; attempt += 1) {
-      response = await requestGemini({ finalModel, apiKey, userPrompt })
+      response = await requestBackendAPI({ finalModel, userPrompt })
 
       if (response.status !== 503) {
         break
@@ -311,7 +326,7 @@ Request:\n${prompt}`
   } catch (err) {
     if (err.name === 'AbortError') {
       throw new Error(
-        `Gemini request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s. ` +
+        `Backend request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s. ` +
           'Use a shorter prompt or try again.',
       )
     }
@@ -322,19 +337,19 @@ Request:\n${prompt}`
   if (!response.ok) {
     if (response.status === 503) {
       throw new Error(
-        `Gemini model "${finalModel}" is under high demand right now. ` +
-          'Automatic retries were attempted. Please try again in a minute or switch to another Gemini model.',
+        `Backend is unavailable. Please try again.`,
       )
     }
 
-    await buildGeminiError(response, finalModel)
+    const errorText = await response.text()
+    throw new Error(`Backend error (${response.status}): ${errorText}`)
   }
 
   const data = await response.json()
   const text = parseGeminiTextResponse(data)
 
   if (!text) {
-    throw new Error('Gemini returned an empty response.')
+    throw new Error('Backend returned an empty response.')
   }
 
   const parsed = extractJson(text)
