@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: react-component-studio
+  namespace: react-studio
+  labels:
+    app: react-component-studio
+spec:
+  selector:
+    app: react-component-studio
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: metrics
+      port: 9113
+      targetPort: metrics
+  type: ClusterIP

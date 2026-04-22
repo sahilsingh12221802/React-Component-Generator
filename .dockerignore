@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+.git
+.gitignore
+.vscode
+dist
+Dockerfile*
+docker-compose*.yml
+.env
+.env.*
+README.md
+k8s
+monitoring
