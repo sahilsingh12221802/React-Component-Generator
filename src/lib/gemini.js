@@ -1,6 +1,6 @@
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 const MAX_503_RETRIES = 0
-const REQUEST_TIMEOUT_MS = 18000
+const REQUEST_TIMEOUT_MS = 45000  // Increased to 45s for slow Gemini API
 
 const sanitizeModelName = (value) => value.trim() || 'gemini-3-flash-preview'
 
@@ -248,7 +248,7 @@ const requestGemini = async ({ finalModel, apiKey, userPrompt }) => {
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
         generationConfig: {
           temperature: 0.35,
-          maxOutputTokens: 2600,
+          maxOutputTokens: 4096,
           responseMimeType: 'application/json',
         },
       }),
@@ -289,98 +289,89 @@ const buildGeminiError = async (response, finalModel) => {
 export async function generateComponentWithGemini({ prompt, model }) {
   const finalModel = sanitizeModelName(model)
 
-  const userPrompt = `You are an expert React UI engineer.
-Return only JSON with this shape:
+  const userPrompt = `
+You are an expert React UI engineer. Generate complete, production-ready components.
+
+CRITICAL REQUIREMENTS:
+1. Return ONLY valid JSON (no explanations, markdown, or backticks)
+2. ALL CSS RULES MUST BE COMPLETE - no truncated properties or unfinished values
+3. All string values must be properly escaped for JSON
+4. Check your output before responding
+
+JSON Format (must be valid):
 {
-  "componentName": "PascalCaseName",
-  "jsx": "React component code as plain text. Export default component.",
-  "css": "CSS styles as plain text",
-  "notes": "short optional integration note"
+  "componentName": "ComponentName",
+  "jsx": "export default function ComponentName(){ return <div>content</div> }",
+  "css": "/* Complete CSS with all properties finished */",
+  "notes": "Brief description"
 }
 
-Rules:
-- JSX must be valid for React + Vite JavaScript.
-- No markdown fences.
-- No external UI libraries.
-- Return exactly one JSON object and nothing else.
-- Keep classes semantic and readable.
-- Keep output concise and production-ready.
-- Limit JSX to around 120 lines and CSS to around 180 lines.
-- Avoid very large decorative blocks.
+EXAMPLES OF VALID CSS (complete values):
+.button { color: blue; font-size: 16px; } ✓
+.button { transition: all 0.3s ease; } ✓
+.button { transition: all 0.3s ease, transform 0.2s; } ✓
 
-Request:\n${prompt}`
+INVALID CSS (incomplete - DO NOT DO THIS):
+.button { transition: } ✗ (missing value)
+.button { color: } ✗ (missing value)
+.button { font-size } ✗ (missing colon and value)
 
-  let response = null
+Generate a component for:
+${prompt}
+
+VERIFY: Your response is valid JSON and all CSS properties have complete values.`
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  let response
   try {
-    for (let attempt = 0; attempt <= MAX_503_RETRIES; attempt += 1) {
-      response = await requestBackendAPI({ finalModel, userPrompt })
-
-      if (response.status !== 503) {
-        break
-      }
-
-      if (attempt < MAX_503_RETRIES) {
-        await sleep(get503BackoffMs(attempt))
-      }
-    }
+    response = await fetch('/api/generate', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          temperature: 0.35,
+          maxOutputTokens: 2600,
+          responseMimeType: 'application/json',
+        },
+      }),
+    })
   } catch (err) {
+    clearTimeout(timeout)
     if (err.name === 'AbortError') {
       throw new Error(
         `Backend request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s. ` +
           'Use a shorter prompt or try again.',
       )
     }
-
     throw err
+  } finally {
+    clearTimeout(timeout)
   }
 
   if (!response.ok) {
     if (response.status === 503) {
-      throw new Error(
-        `Backend is unavailable. Please try again.`,
-      )
+      throw new Error('Backend is unavailable. Please try again.')
     }
-
     const errorText = await response.text()
     throw new Error(`Backend error (${response.status}): ${errorText}`)
   }
 
   const data = await response.json()
-  const text = parseGeminiTextResponse(data)
 
-  if (!text) {
-    throw new Error('Backend returned an empty response.')
-  }
-
-  const parsed = extractJson(text)
-
-  if (!parsed?.jsx || !parsed?.css) {
-    const looseParsed = extractLooseComponentPayload(text)
-    if (looseParsed) {
-      return {
-        componentName: looseParsed.componentName,
-        jsx: looseParsed.jsx,
-        css: looseParsed.css,
-        notes:
-          looseParsed.notes ||
-          'Recovered from non-strict/truncated JSON response. Consider re-generating for a cleaner output.',
-      }
-    }
-  }
-
-  if (!parsed?.jsx || !parsed?.css) {
+  if (data?.jsx && data?.componentName) {
     return {
-      componentName: 'GeneratedComponent',
-      jsx: text,
-      css: '/* Gemini did not return separate CSS. */',
-      notes: 'The response was not strict JSON, so raw output is shown in JSX tab.',
+      componentName: data.componentName,
+      jsx: data.jsx,
+      css: data.css || '',
+      notes: data.notes || '',
     }
   }
 
-  return {
-    componentName: parsed.componentName || 'GeneratedComponent',
-    jsx: parsed.jsx,
-    css: parsed.css,
-    notes: parsed.notes || '',
-  }
+  throw new Error('Backend returned invalid component data.')
 }

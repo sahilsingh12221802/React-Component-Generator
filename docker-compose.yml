@@ -2,33 +2,68 @@ version: '3.8'
 
 services:
   backend:
-    image: node:22-alpine
-    working_dir: /app
+    build: .
+    container_name: react-component-backend
     ports:
       - "5006:5006"
     environment:
-      PORT: 5006
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-    volumes:
-      - ./package.json:/app/package.json
-      - ./package-lock.json:/app/package-lock.json
-      - ./backend:/app/backend
-      - ./node_modules:/app/node_modules
-    command: sh -c "npm install && npm run backend"
+      - PORT=5006
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - NODE_ENV=production
+    networks:
+      - monitoring
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  frontend:
-    image: node:22-alpine
-    working_dir: /app
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: react-component-prometheus
     ports:
-      - "3000:3000"
+      - "9090:9090"
     volumes:
-      - ./package.json:/app/package.json
-      - ./package-lock.json:/app/package-lock.json
-      - ./src:/app/src
-      - ./public:/app/public
-      - ./vite.config.js:/app/vite.config.js
-      - ./index.html:/app/index.html
-      - ./node_modules:/app/node_modules
-    command: sh -c "npm install && npm run dev"
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - monitoring
+    restart: unless-stopped
     depends_on:
       - backend
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: react-component-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning/dashboards.d:/etc/grafana/provisioning/dashboards.d
+      - ./grafana/provisioning/datasources.d:/etc/grafana/provisioning/datasources.d
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - monitoring
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
